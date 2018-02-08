@@ -34,6 +34,7 @@
 #pragma hdrstop
 #define INDLL
 #include "pieceif.h"
+#include "libusb-1.0/libusb.h"
 
 //                 01234567890123456789
 #define MUTEXNAME "_pieceif_dll_mutex_"
@@ -58,6 +59,9 @@ VOID CALLBACK acc_done(
 }
 #endif
 
+CRITICAL_SECTION csLibUSBInit;
+LONG lLibUSBInitCount = 0;
+libusb_context* ctxLibUSB = NULL;
 
 unsigned char _piece_version_info[32];
 int _piece_version;
@@ -248,6 +252,14 @@ int DLLAPI ismInitEx( int devno, int waitn )
 
 	if ( waitn == PIECE_DEF_WAITN ) waitn = 500;
 
+	EnterCriticalSection(&csLibUSBInit);
+	{
+		if (lLibUSBInitCount == 0 && ctxLibUSB == NULL)
+			libusb_init(&ctxLibUSB);
+		InterlockedIncrement(&lLibUSBInitCount);
+	}
+	LeaveCriticalSection(&csLibUSBInit);
+
 	pu = usbhandles + devno;
 
 	curusb = pu;
@@ -282,10 +294,10 @@ int DLLAPI ismInitEx( int devno, int waitn )
 
 	libusb_device** devices;
 	while ( 1 ) {
-#if 0
+#if 1
 		int found_count = -1;
 		pu->udev = NULL;
-		libusb_get_device_list(NULL, &devices);
+		libusb_get_device_list(ctxLibUSB, &devices);
 		for(libusb_device** p = devices; *p; p++)
 		{
 			struct libusb_device_descriptor dev_desc;
@@ -306,9 +318,9 @@ int DLLAPI ismInitEx( int devno, int waitn )
 		libusb_free_device_list(devices, 1);
 		if (found_count == -1)
 			return 1;
+#else
+		pu->udev = libusb_open_device_with_vid_pid(ctxLibUSB, USB_ID_VENDOR, USB_ID_PRODUCT);
 #endif
-		pu->udev = libusb_open_device_with_vid_pid(NULL, USB_ID_VENDOR, USB_ID_PRODUCT);
-
 		if ( pu->udev != NULL) {
 			int ver;
 
@@ -358,6 +370,15 @@ int DLLAPI ismExitEx( int devno )
 		CloseHandle( pu->hMutex );
 		pu->hMutex = NULL;
 	}
+
+	EnterCriticalSection(&csLibUSBInit);
+	{
+		if (InterlockedDecrement(&lLibUSBInitCount) == 0 && ctxLibUSB != NULL) {
+			libusb_exit(ctxLibUSB);
+			ctxLibUSB = NULL;
+		}
+	}
+	LeaveCriticalSection(&csLibUSBInit);
 
 	return 0;
 }
